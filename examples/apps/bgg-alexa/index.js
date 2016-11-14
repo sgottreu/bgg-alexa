@@ -8,17 +8,23 @@
 
 	var app = new Alexa.app('bgg-alexa');
 
-	var db_config = require('./db_config');
-	var node_env = process.env.NODE_ENV.trim();
-	var db_collection = db_config[node_env];
+	var db_collection = 'bgg-alexa';
+
+  var xmldoc = require('xmldoc');
+  var http = require('http');
 
 	var mongo = require('mongodb');
 	var monk = require('monk');
 
 	var mongodb_config = (process.env.mongodb) ? process.env.mongodb : process.argv[2];
 	var mongo_url = 'mongodb://'+mongodb_config;
-  var bgg = require('bgg');
+
 	var db = monk(mongo_url);
+
+    // "chai": "^3.5.0",
+    // "chai-as-promised": "^6.0.0",
+
+    // "mocha": "^3.1.2",
 
 	app.launch(function(req, res) {
     var prompt = 'What kind of game do you want to play?';
@@ -70,13 +76,108 @@
 
       console.log(prompt);
       res.say(prompt).shouldEndSession(false).send();
-      bgg('collection', {username: bggId, own: 1}).then(function(results){
-        console.log(results);
-      });
+
+      parseUserCollection('http://www.boardgamegeek.com/xmlapi2/collection?username='+bggId+'&owned=1', searchTerm);
+
     }
     return false;
 
   }
+
+var parseUserCollection = function(url, searchTerm){
+  http.get(url, function(res) {
+    let statusCode = res.statusCode;
+    let contentType = res.headers['content-type'];
+    let error;
+    if (statusCode !== 200) {
+      error = new Error(`Request Failed.\n` +
+                        `Status Code: ${statusCode}`);
+    // } else if (!/^text\/xml/.test(contentType)) {
+    //   error = new Error(`Invalid content-type.\n` +
+    //                     `Expected application/json but received ${contentType}`);
+     }
+    if (error) {
+      console.log(error.message);
+      // consume response data to free up memory
+      res.resume();
+      return;
+    }
+
+    res.setEncoding('utf8');
+    let rawData = '';
+    res.on('data', function(chunk){ rawData += chunk });
+    res.on('end', function() {
+      try {
+        var doc = new xmldoc.XmlDocument(rawData);
+
+        let ids = [];
+
+        doc.eachChild(function(child, index, arr){
+          let game_name = child.childNamed('name');
+          games[child.attr.objectid] = { id: child.attr.objectid, name: game_name.val };
+          ids.push(child.attr.objectid);
+        });
+        findCatMechMatches('http://www.boardgamegeek.com/xmlapi2/thing?id='+ids.join(','), searchTerm);
+      } catch (e) {
+        console.log(e.message);
+      }
+    });
+  }).on('error', function(e){
+    console.log(`Got error: ${e.message}`);
+  });
+}
+
+function findCatMechMatches(url, searchTerm){
+  http.get(url, function(res) {
+    let statusCode = res.statusCode;
+    let contentType = res.headers['content-type'];
+    let error;
+    if (statusCode !== 200) {
+      error = new Error(`Request Failed.\n` +
+                        `Status Code: ${statusCode}`);
+    // } else if (!/^text\/xml/.test(contentType)) {
+    //   error = new Error(`Invalid content-type.\n` +
+    //                     `Expected application/json but received ${contentType}`);
+    }
+
+    if (error) {
+      console.log(error.message);
+      // consume response data to free up memory
+      res.resume();
+      return;
+    }
+
+    res.setEncoding('utf8');
+    let rawData = '';
+    res.on('data', function(chunk){ rawData += chunk });
+    res.on('end', function() {
+      try {
+        var doc = new xmldoc.XmlDocument(rawData);
+
+        let game_matches = [];
+
+        doc.eachChild(function(child, index, arr){
+          let catMechs = child.childrenNamed('link');
+          for(var x=0,len=catMechs.length;x<len;x++){
+            if(catMechs[x].attr.type == 'boardgamecategory' || catMechs[x].attr.type == 'boardgamemechanic' || catMechs[x].attr.type == 'boardgamefamily'){
+              if(catMechs[x].attr.value.toLowerCase() == searchTerm.toLowerCase() ){
+                game_matches.push( games[child.attr.id] );
+              }
+            }
+          }
+        });
+        var prompt = 'I found '+game_matches.length+' matches for your search of '+searchTerm+ ' games.';
+        console.log(prompt);
+        res.say(prompt).shouldEndSession(false).send();
+      } catch (e) {
+        console.log(e.message);
+      }
+    });
+  }).on('error', function(e){
+    console.log(`Got error: ${e.message}`);
+  });
+}
+
 
   app.intent('saveBGGUsername', {
      'slots': {
@@ -84,15 +185,10 @@
      },
       'utterances': ['{my} {name|username} is {-|USERNAME_LETTERS}']
     },
-
     function(req, res) {
-
       var USERNAME_LETTERS = req.slot('USERNAME_LETTERS');
-
       return false;
-
     }
-
   );
 
 	module.exports = app;
